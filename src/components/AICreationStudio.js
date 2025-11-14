@@ -1,14 +1,30 @@
 import React, { useState, useEffect } from 'react';
 import './AICreationStudio.css';
 import Navbar from './Navbar';
+import GeminiAssistant from './GeminiAssistant';
 
 // Constants for Voice Options
 const voiceOptions = [
-    { value: "Crisp Female", text: "Crisp Female" },
-    { value: "Deep Male", text: "Deep Male" },
-    { value: "Child Play", text: "Child Play" },
-    { value: "Robotic", text: "Robotic" }
-]; 
+    { value: "af_bella", text: "Bella (African Female)" },
+    { value: "af_nova", text: "Nova (African Female)" },
+    { value: "af_onyx", text: "Onyx (African Female)" },
+    { value: "af_alloy", text: "Alloy (African Female)" },
+    { value: "am_michael", text: "Michael (American Male)" },
+    { value: "am_echo", text: "Echo (American Male)" },
+    { value: "am_fable", text: "Fable (American Male)" },
+    { value: "am_sky", text: "Sky (American Male)" },
+    { value: "as_liam", text: "Liam (Asian Male)" },
+    { value: "as_shimmer", text: "Shimmer (Asian Female)" },
+    { value: "eu_stella", text: "Stella (European Female)" },
+    { value: "eu_ash", text: "Ash (European Male)" },
+    { value: "sa_aria", text: "Aria (South Asian Female)" },
+    { value: "sa_sage", text: "Sage (South Asian Male)" },
+    { value: "zm_yunxia", text: "Yunxia (Chinese Female)" },
+    { value: "zm_yunyang", text: "Yunyang (Chinese Male)" }
+];
+
+// Backend API URL (Update this to your ngrok URL)
+const BACKEND_API = 'https://5d92906dc1bf.ngrok-free.app';
 
 function AICreationStudio() {
     // --- State Management ---
@@ -20,6 +36,45 @@ function AICreationStudio() {
     ]);
     const [speakers, setSpeakers] = useState([]);
     const [numSpeakersInput, setNumSpeakersInput] = useState(3);
+    const [uploadedImage, setUploadedImage] = useState(null);
+    const [uploadedImageFile, setUploadedImageFile] = useState(null);
+    const [isGenerating, setIsGenerating] = useState(false);
+    const [jobId, setJobId] = useState(null);
+    const [jobStatus, setJobStatus] = useState(null);
+    const [generatedVideo, setGeneratedVideo] = useState(null);
+    const [videoError, setVideoError] = useState(null);
+
+    // ADD: Callback to handle prompt from Gemini
+    const handlePromptFromGemini = (generatedPrompt) => {
+        setPromptInput(generatedPrompt);
+    };
+
+    // ADD: Callback to handle dialogue from Gemini
+    const handleDialogueFromGemini = (generatedDialogues) => {
+        const newDialogues = generatedDialogues.map((dialogue, index) => ({
+            id: index + 1,
+            speakerId: dialogue.speakerId || `S${index + 1}`,
+            text: dialogue.text
+        }));
+        setDialogueLines(newDialogues);
+    };
+
+    // ADD: Callback to handle image from Gemini
+    const handleImageFromGemini = (imageData) => {
+        const byteCharacters = atob(imageData.split(',')[1]);
+        const byteNumbers = new Array(byteCharacters.length);
+        for (let i = 0; i < byteCharacters.length; i++) {
+            byteNumbers[i] = byteCharacters.charCodeAt(i);
+        }
+        const byteArray = new Uint8Array(byteNumbers);
+        const blob = new Blob([byteArray], { type: 'image/png' });
+        const file = new File([blob], 'generated-image.png', { type: 'image/png' });
+        
+        const imageUrl = URL.createObjectURL(file);
+        setUploadedImage(imageUrl);
+        setUploadedImageFile(file);
+        console.log('✅ Generated image set as reference');
+    };
 
     // --- Effects for Speaker Management ---
     useEffect(() => {
@@ -36,6 +91,64 @@ function AICreationStudio() {
             return newSpeakers;
         });
     }, [numSpeakersInput]);
+
+    // Poll job status
+// ✅ FIXED: Poll job status with proper video URL setting
+useEffect(() => {
+    if (jobId && jobStatus === 'processing') {
+        const interval = setInterval(async () => {
+            try {
+                const response = await fetch(`${BACKEND_API}/api/status/${jobId}`, {
+                    method: 'GET',
+                    headers: {
+                        'ngrok-skip-browser-warning': 'true'
+                    }
+                });
+                
+                if (!response.ok) {
+                    console.error(`HTTP Error: ${response.status}`);
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                
+                const contentType = response.headers.get('content-type');
+                if (!contentType || !contentType.includes('application/json')) {
+                    throw new TypeError('Server returned non-JSON response');
+                }
+                
+                const data = await response.json();
+                
+                if (data.status === 'failed') {
+                    clearInterval(interval);
+                    setJobStatus('failed');
+                    alert(`Video generation failed: ${data.message || data.error}`);
+                    return;
+                }
+                
+                if (data.status === 'completed') {
+                    clearInterval(interval);
+                    // ✅ CRITICAL: Set video URL BEFORE changing status
+                    const videoUrl = `${BACKEND_API}/api/video/${jobId}?t=${Date.now()}`;
+                    console.log('✅ Setting video URL:', videoUrl);
+                    setGeneratedVideo(videoUrl);
+                    
+                    // ✅ Set status AFTER video URL is ready
+                    setJobStatus('completed');
+                    console.log('✅ Video generation completed!');
+                } else {
+                    // Still processing
+                    setJobStatus(data.status);
+                    console.log(`⏳ Status: ${data.status}`);
+                }
+            } catch (error) {
+                console.error('Error checking status:', error);
+            }
+        }, 5000);
+        
+        return () => clearInterval(interval);
+    }
+}, [jobId, jobStatus]);
+
+
 
     // --- Handlers ---
     const handlePromptChange = (e) => {
@@ -91,27 +204,140 @@ function AICreationStudio() {
         setNumSpeakersInput(prev => Math.max(prev - 1, 0));
     };
 
-    const generateVideoJson = () => {
-        alert('Video Generation Initiated! Check console for simulated JSON output.');
-
-        const ttsAudio = dialogueLines.reduce((acc, line) => {
-            const speakerConfig = speakers.find(s => s.id === line.speakerId);
-            const voiceKey = speakerConfig?.voice || 'default_voice';
-            const text = line.text;
-
-            acc.text = acc.text ? `${acc.text} ${text}` : text;
-            acc[`human${line.speakerId}_voice`] = voiceKey;
-            return acc;
-        }, { text: '' });
-
-        const finalJSON = {
-            "prompt": promptInput || 'A new avatar video.',
-            "cond_image": 'user_uploaded_image.png',
-            "tts_audio": ttsAudio,
-            "cond_audio": {}
-        };
-        console.log(JSON.stringify(finalJSON, null, 2));
+     // Handle image upload
+    const handleImageUpload = (e) => {
+        const file = e.target.files[0];
+        if (file) {
+            const imageUrl = URL.createObjectURL(file);
+            setUploadedImage(imageUrl);
+            setUploadedImageFile(file);
+            console.log('📸 Image uploaded:', file.name, file.size, 'bytes');
+        }
     };
+
+    // Download generated video
+    const downloadVideo = async () => {
+        if (jobId) {
+            window.open(`${BACKEND_API}/api/download/${jobId}`, '_blank');
+        }
+    };
+
+    // Reset and create another video
+    const createAnotherVideo = () => {
+        setJobStatus(null);
+        setJobId(null);
+        setGeneratedVideo(null);
+        setVideoError(null);
+    };
+
+    // Main function to send to backend
+    const forgeMasterpiece = async () => {
+        if (!uploadedImageFile) {
+            alert('Please upload an image first!');
+            return;
+        }
+
+        setIsGenerating(true);
+        setJobStatus('processing');
+        setGeneratedVideo(null);
+        setVideoError(null); 
+        
+        const activeLines = dialogueLines.filter(line => line.speakerId && line.text.trim());
+        
+        if (activeLines.length === 0) {
+            alert('Please add at least one dialogue line!');
+            setIsGenerating(false);
+            setJobStatus(null);
+            return;
+        }
+
+        try {
+            const isSingleSpeaker = speakers.length === 1;
+            
+            const dialogueText = dialogueLines
+                .filter(line => line.speakerId && line.text.trim())
+                .map(line => {
+                    if (isSingleSpeaker) {
+                        return line.text;
+                    } else {
+                        return `(${line.speakerId.toLowerCase()}) ${line.text}`;
+                    }
+                })
+                .join(' ');
+
+            const ttsAudio = {
+                text: dialogueText
+            };
+
+            speakers.forEach(speaker => {
+                if (speaker.voice) {
+                    const speakerNumber = speaker.id.toLowerCase().replace('s', '');
+                    const speakerKey = `human${speakerNumber}_voice`;
+                    ttsAudio[speakerKey] = `/content/drive/MyDrive/weights/Kokoro-82M/voices/${speaker.voice}.pt`;
+                }
+            });
+
+            const config = {
+                "prompt": promptInput || 'A new avatar video.',
+                "tts_audio": ttsAudio
+            };
+
+            console.log('📤 Sending JSON to backend:');
+            console.log('Config JSON:', JSON.stringify(config, null, 2));
+
+            const formData = new FormData();
+            formData.append('image', uploadedImageFile);
+            formData.append('config', JSON.stringify(config));
+
+            console.log('🔄 Sending request to backend...');
+
+          // Around line 254 in your code
+        const response = await fetch(`${BACKEND_API}/api/generate-tts-video`, {
+            method: 'POST',
+            body: formData,
+            headers: {
+                'ngrok-skip-browser-warning': 'true'  // ✅ ADD this header
+            }
+        });
+
+
+            if (response.ok) {
+                const result = await response.json();
+                setJobId(result.job_id);
+                setJobStatus('processing');
+                console.log('✅ Backend response:', result);
+            } else {
+                const errorText = await response.text();
+                console.error('❌ Backend error:', errorText);
+                throw new Error(`Backend error: ${response.status} - ${errorText}`);
+            }
+
+        } catch (error) {
+            console.error('❌ Error:', error);
+            alert('Error starting video generation. Please check the console for details.');
+            setJobStatus(null);
+        } finally {
+            setIsGenerating(false);
+        }
+    };
+ 
+   // ✅ IMPROVED: Better error handling for video loading
+const handleVideoError = (e) => {
+    console.error('Video loading error:', e);
+    console.error('Video error code:', e.target?.error?.code);
+    console.error('Current video src:', e.target?.currentSrc);
+    
+    // Check if it's a network error vs corrupted file
+    if (e.target?.error?.code === 4) {
+        setVideoError('Network error loading video. Check your connection.');
+    } else if (e.target?.error?.code === 2) {
+        setVideoError('Video file format not supported by your browser.');
+    } else {
+        setVideoError('Failed to load video. Please try downloading instead.');
+    }
+};
+
+    
 
     return (
         <div className="ai-creation-studio">
@@ -144,13 +370,38 @@ function AICreationStudio() {
                                     <span className="ai-creation-studio__card-title">Visual Inspiration</span>
                                     <i className="fa-solid fa-camera ai-creation-studio__card-icon"></i>
                                 </div>
-                                <div className="ai-creation-studio__upload-area">
+                               <div className="ai-creation-studio__upload-area">
+                                    {uploadedImage ? (
+                                        <div className="ai-creation-studio__image-preview">
+                                            <img 
+                                                src={uploadedImage} 
+                                                alt="Uploaded preview" 
+                                                className="ai-creation-studio__uploaded-image"
+                                            />
+                                            <button 
+                                                className="ai-creation-studio__btn-remove-image"
+                                                onClick={() => {
+                                                    setUploadedImage(null);
+                                                    setUploadedImageFile(null);
+                                                    console.log('🗑 Image removed');
+                                                }}
+                                            >
+                                                <i className="fa-solid fa-circle-xmark"></i>
+                                            </button>
+                                            <p className="ai-creation-studio__file-name">
+                                                {uploadedImageFile?.name}
+                                            </p>
+                                        </div>
+                                    ) : (  <>
                                     <i className="fa-solid fa-cloud-arrow-up ai-creation-studio__upload-icon"></i>
                                     <p>Upload style references, character art, or mood boards</p>
                                     <button className="ai-creation-studio__btn-upload" onClick={() => document.getElementById('file-upload').click()}>
                                         Click to browse files
                                     </button>
-                                    <input type="file" id="file-upload" style={{ display: 'none' }} />
+                                     </>
+                                    )}
+                                    <input type="file" id="file-upload" style={{ display: 'none' }}  accept="image/*"
+                                        onChange={handleImageUpload} />
                                 </div>
                             </div>
                         </div>
@@ -247,14 +498,165 @@ function AICreationStudio() {
                         </div>
 
                         <div className="ai-creation-studio__action-buttons">
-                            <button className="ai-creation-studio__btn-secondary">Preview Storyboard</button>
-                            <button className="ai-creation-studio__btn-primary" onClick={generateVideoJson}>FORGE YOUR MASTERPIECE</button>
+                            {/* <button className="ai-creation-studio__btn-secondary">Preview Storyboard</button> */}
+                              
+                            {jobStatus === 'completed' ? (
+                                <button 
+                                    className="ai-creation-studio__btn-primary ai-creation-studio__btn-success"
+                                    onClick={downloadVideo}
+                                >
+                                    <i className="fa-solid fa-download"></i> Download Video
+                                </button>
+                            ) : (
+                                <button 
+                                    className="ai-creation-studio__btn-primary" 
+                                    onClick={forgeMasterpiece}
+                                    disabled={isGenerating || !uploadedImageFile}
+                                >
+                                    {isGenerating ? (
+                                        <>
+                                            <i className="fa-solid fa-spinner fa-spin"></i> Generating...
+                                        </>
+                                    ) : (
+                                        'FORGE YOUR MASTERPIECE'
+                                    )}
+                                </button>
+                            )}
+                            
+                           {jobStatus && (
+                <div className="ai-creation-studio__status">
+                    {jobStatus === 'processing' ? (
+                        <div className="ai-creation-studio__status-processing">
+                            <i className="fa-solid fa-spinner fa-spin"></i> 
+                            Generating video... This may take a few minutes.
                         </div>
+                    ) : jobStatus === 'completed' ? (
+                        <div className="ai-creation-studio__status-completed">
+                            <i className="fa-solid fa-check"></i> 
+                            Video ready! Scroll down to view.
+                        </div>
+                    ) : jobStatus === 'failed' ? (  /* ✅ ADD failed state */
+                        <div className="ai-creation-studio__status-failed" style={{color: 'red'}}>
+                            <i className="fa-solid fa-exclamation-triangle"></i> 
+                            Video generation failed. Please try again.
+                        </div>
+                    ) : null}
+                </div>
+            )}
+            </div>
                     </section>
+
+                    {/* Section 3: Generated Video Output */}
+                 {jobStatus === 'completed' && generatedVideo ? (
+                        <section id="section-output" className="ai-creation-studio__section">
+                            <div className="ai-creation-studio__section-header">
+                                <h1 className="ai-creation-studio__section-title">YOUR MASTERPIECE</h1>
+                            </div>
+                            
+                            <div className="ai-creation-studio__content-wrapper">
+                                <div className="ai-creation-studio__card ai-creation-studio__card--gold-border">
+                                    <div className="ai-creation-studio__card-header">
+                                        <span className="ai-creation-studio__card-title">Generated Video</span>
+                                        <i className="fa-solid fa-film ai-creation-studio__card-icon"></i>
+                                    </div>
+                                    
+                                    <div className="ai-creation-studio__video-container">
+                                        {videoError ? (
+                                            <div style={{
+                                                color: '#dc3545',
+                                                padding: '40px 20px',
+                                                textAlign: 'center',
+                                                backgroundColor: '#f8d7da',
+                                                borderRadius: '8px',
+                                                margin: '20px'
+                                            }}>
+                                                <i className="fa-solid fa-exclamation-triangle" style={{fontSize: '48px', marginBottom: '20px'}}></i>
+                                                <p style={{fontSize: '16px', marginBottom: '20px'}}>{videoError}</p>
+                                                <button 
+                                                    onClick={downloadVideo} 
+                                                    className="ai-creation-studio__btn-primary"
+                                                >
+                                                    <i className="fa-solid fa-download"></i> Download Video Instead
+                                                </button>
+                                            </div>
+                                        ) : (
+                                            <video 
+                                                controls 
+                                                autoPlay 
+                                                muted 
+                                                className="ai-creation-studio__generated-video"
+                                                key={jobId}
+                                                crossOrigin="anonymous"
+                                                onError={handleVideoError}
+                                                playsInline
+                                                style={{
+                                                    width: '100%',
+                                                    maxHeight: '600px',
+                                                    borderRadius: '8px',
+                                                    backgroundColor: '#000'
+                                                }}
+                                            >
+                                                <source src={generatedVideo} type="video/mp4" />
+                                                Your browser does not support the video tag.
+                                            </video>
+                                        )}
+                                    </div>
+                                    
+                                    <div className="ai-creation-studio__video-actions">
+                                        <button 
+                                            className="ai-creation-studio__btn-primary" 
+                                            onClick={downloadVideo}
+                                        >
+                                            <i className="fa-solid fa-download"></i> Download Video
+                                        </button>
+                                        <button 
+                                            className="ai-creation-studio__btn-secondary"
+                                            onClick={createAnotherVideo}
+                                        >
+                                            <i className="fa-solid fa-rotate-left"></i> Create Another
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </section>
+                    ) : jobStatus === 'processing' ? (
+                        <section id="section-processing" className="ai-creation-studio__section">
+                            <div style={{
+                                textAlign: 'center',
+                                padding: '60px 20px',
+                                color: '#666'
+                            }}>
+                                <div style={{
+                                    animation: 'spin 1s linear infinite',
+                                    display: 'inline-block',
+                                    marginBottom: '20px'
+                                }}>
+                                    <i className="fa-solid fa-spinner fa-3x" style={{color: '#2196F3'}}></i>
+                                </div>
+                                <h2>Video Generation in Progress</h2>
+                                <p>This may take 5-10 minutes...</p>
+                                <p style={{fontSize: '12px', color: '#999'}}>Job ID: {jobId}</p>
+                            </div>
+                        </section>
+                    ) : null}
                 </main>
             </div>
+            
+            
+            {/* Gemini Assistant */}
+            <GeminiAssistant 
+                onPromptGenerated={handlePromptFromGemini}
+                onDialogueGenerated={handleDialogueFromGemini}
+                onImageGenerated={handleImageFromGemini}
+                currentSpeakers={speakers}
+            />
         </div>
     );
 }
 
 export default AICreationStudio;
+
+
+
+
+
